@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "chioso"
+version = "0.0.0"
+description = ""
+authors = ["Ji Yu <jyu@uchc.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+xtrain = "^0.2.0"
+orbax-checkpoint = "^0.5, <=0.5.3"
+
+[tool.poetry.group.dev.dependencies]
+jax = { extras = ["cuda11_pip"], version = "0.4.24" }
+nvidia-cudnn-cu11 = "^8.0"
+jupyterlab = "^4.1.6"
+tensorflow = "^2.16.1"
+wandb = "^0.16.6"
+matplotlib = "^3.8.4"
+ml-collections = "^0.1.1"
+tqdm = "^4.66.2"
+scikit-image = "^0.23.1"
+imagecodecs = "^2024.1.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "jax"
+url = "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html"
+priority = "supplemental"
