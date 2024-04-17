@@ -21,6 +21,7 @@ ml-collections = "^0.1.1"
 tqdm = "^4.66.2"
 scikit-image = "^0.23.1"
 imagecodecs = "^2024.1.1"
+scikit-learn = "^1.4.2"
 
 [build-system]
 requires = ["poetry-core"]
