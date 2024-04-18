@@ -4,6 +4,8 @@ import jax.numpy as jnp
 import optax
 
 from .attention import CellAnnotator
+from .predictor import MLP
+from ..data import SGData2D
 
 @jax.custom_vjp
 def gradient_reversal(x):
@@ -29,45 +31,50 @@ class Discriminator(nn.Module):
 
     @nn.compact
     def __call__(self, x):
-        dim = x.shape[-1]
-        for _ in range(self.n_layers):
-            x = nn.Dense(dim)(x)
-            x = nn.relu(x)
-            x = nn.LayerNorm()(x)
-        x = nn.Dense(1)(x)
-        return x
+        return MLP(1, self.n_layers)(x)
 
 class AdvModel(nn.Module):
-    predictor: CellAnnotator
-    dsc: Discriminator
+    embedding: jax.Array
+    dsc_n_layers: int = 4
+    patch_size: tuple[int] = (128, 128)
+    momentum: float = 0.9
 
-    def __call__(self, mosta_data, tome_data):
-        sg, mask = mosta_data
+    def setup(self):
+        self.predictor = CellAnnotator(self.embedding)
+        self.dsc = Discriminator(self.dsc_n_layers)
+        self.fg_norm = self.variable('stats', "fg_norm", jnp.zeros, [1])
 
-        x, binary_pred = self.predictor(sg)
-        
-        x = x.reshape(-1, x.shape[-1])
-        x = gradient_reversal(x)
-        pred_x = self.dsc(x)
+    def __call__(self, mosta_data, tome_data, *, training=False):
+        (data, indices, indptr), mask = mosta_data
+        sg = SGData2D(data, indices, indptr, self.patch_size, self.embedding.shape[0])
+
+        x, fg = self.predictor(sg, training=training)
 
         if mask is not None:
-            mask = (mask >= 0.5).astype("float32").reshape(-1, 1)
+            mask_loss = optax.sigmoid_binary_cross_entropy(fg, mask).mean()
+
         else:
-            mask = (binary_pred >= 0).astype("float32").reshape(-1, 1)
+            is_initialized = self.has_variable('stats', 'fg_norm')
+            if is_initialized:
+                self.fg_norm.value = self.fg_norm.value * self.momentum + fg.mean() * (1-self.momentum)
+                fg = fg - self.fg_norm.value
+            mask = nn.sigmoid(fg)
+            mask_loss = None
+
+        x = gradient_reversal(x)
+        pred_x = self.dsc(x)[..., 0]
 
         dsc_loss_x = optax.sigmoid_binary_cross_entropy(
             pred_x,
             jnp.ones_like(pred_x),
-        ).sum(where=mask)
+        ).sum(where=mask>=.5)/128/128
+        # dsc_loss_x *= mask
+        # dsc_loss_x = dsc_loss_x.mean() 
 
         pred_y = self.dsc(tome_data)
         dsc_loss_y = optax.sigmoid_binary_cross_entropy(
             pred_y,
             jnp.zeros_like(pred_y)
-        ).sum()
+        ).mean()
         
-        return dict(
-            dsc_loss_x=dsc_loss_x, 
-            dsc_loss_y=dsc_loss_y, 
-            prediction=binary_pred,
-        )
+        return dict(dsc_loss_x=dsc_loss_x, dsc_loss_y=dsc_loss_y, mask_loss=mask_loss)

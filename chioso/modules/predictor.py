@@ -48,8 +48,7 @@ class LinearPredictor(nn.Module):
     dim_out: int
     dim_hidden: int = 256
     n_layers: int = 6
-    dropout: float =0.2
-    
+    dropout: float =0.2    
     
     def setup(self):
         self.embed = SCEmbed(self.n_genes, self.dim_hidden)

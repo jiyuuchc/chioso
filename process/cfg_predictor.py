@@ -9,14 +9,14 @@ def get_config():
     config.name = "celltype_linear_model"
 
     config.dataset = ml_collections.ConfigDict()
-    config.dataset.path = "/home/FCAM/jyu/datasets/tome.ds"
-    config.dataset.lut = "../mosta/gene_mapping.json"
+    config.dataset.train = "../mosta/ref_data/tome_train.ds"
+    config.dataset.val = "../mosta/ref_data/tome_val.ds"
 
     config.train = ml_collections.ConfigDict()
     config.train.seed = 1234
     config.train.batchsize = 128
-    config.train.train_steps = 70000
-    config.train.validation_interval = 5000
+    config.train.train_steps = 100000
+    config.train.validation_interval = 10000
     config.train.lr = 1e-4
     config.train.weight_decay = 1e-3
 

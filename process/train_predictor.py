@@ -1,12 +1,5 @@
 #!/usr/bin/env python
 
-from __future__ import annotations
-
-import os
-
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
-import json
 import logging
 import random
 import sys
@@ -27,7 +20,6 @@ import wandb
 from ml_collections import config_flags
 from pprint import pprint
 from sklearn.metrics import balanced_accuracy_score
-from tqdm import tqdm
 
 from xtrain import Trainer, TFDatasetAdapter, VMapped
 
@@ -85,33 +77,14 @@ class BalancedAcc:
 
 def get_ds(config):
     padding = config.dataset.get("padding", 4096)
-    ds_location = config.dataset.get(
-        "path",
-        "../tome.ds"
-    )
-
-    with open(config.dataset.lut) as f:
-        lut_ = json.load(f)
-
     n_tome_genes = config.dataset.get("n_tome_genes", 49585)
 
-    lut = np.zeros([n_tome_genes], dtype=int) - 1
-    lut[list(lut_.values())] = np.arange(len(lut_))
-    lut = tf.constant(lut, dtype=tf.int32)
-
     def pre_process(idx, cnt, gt):
-        idx = tf.gather(lut, idx)
         return (idx, cnt), gt
 
-    ds = (
-        tf.data.Dataset.load(ds_location)
-        .map(pre_process)
-    )
-
     ds_train = (
-        ds.enumerate()
-        .filter(lambda n,x: n%5 != 0)
-        .map(lambda n,x: x)
+        tf.data.Dataset.load(config.dataset.train)
+        .map(lambda gid, cnt, gt: ((gid, cnt), gt))
         .repeat()
         .shuffle(12800)
         .padded_batch(
@@ -119,21 +92,18 @@ def get_ds(config):
             padded_shapes=(
                 ([padding], [padding]), [],
             ),
-            padding_values=-1,
         )    
         .prefetch(1)
     ) 
 
     ds_val = (
-        ds.enumerate()
-        .filter(lambda n,x: n%5 == 0)
-        .map(lambda n, x: x)
+        tf.data.Dataset.load(config.dataset.val)
+        .map(lambda gid, cnt, gt: ((gid, cnt), gt))
         .padded_batch(
             config.train.batchsize,
             padded_shapes=(
                 ([padding], [padding]), [],
             ),
-            padding_values=-1,
             drop_remainder=True,
         )    
         .prefetch(1)
@@ -168,7 +138,7 @@ def run(config, logpath, seed):
 
     sc = optax.piecewise_constant_schedule(
         config.train.lr, 
-        {int(config.train.train_steps * 0.9): 0.1},
+        {int(config.train.train_steps * 0.8): 0.1},
     )
     tx = optax.adamw(sc, weight_decay = config.train.weight_decay)
 
@@ -209,6 +179,7 @@ def run(config, logpath, seed):
         
         train_it.parameters["Embed_0"]["embedding"] = jnp.asarray(embed)
 
+    cp = ocp.StandardCheckpointer()
     for step in range(config.train.train_steps):
         next(train_it)
         if (step + 1) % config.train.validation_interval == 0:
@@ -226,12 +197,26 @@ def run(config, logpath, seed):
             wandb.log(vals)
 
             train_it.reset_loss_logs()
-
-    cp = ocp.StandardCheckpointer()
     cp.save(
-        (logpath/"checkpoint").absolute(), 
+        (logpath/"checkpoint").absolute(),
         args=ocp.args.StandardSave(train_it),
     )
+
+    logging.info("Record reference cell features") 
+    embedding = tf.constant(train_it.parameters["embed"]["Embed_0"]["embedding"])
+    def _agg(indices, cnts, gt):
+        cnts = tf.cast(cnts, tf.float32)
+        cnts = cnts / tf.reduce_sum(cnts)
+        x = cnts[None,:] @ tf.gather(embedding, indices)
+        return x[0]
+
+    ds_export = (
+        tf.data.Dataset.load(config.dataset.train)
+        .concatenate(tf.data.Dataset.load(config.dataset.val))
+        .map(_agg)
+    )
+    ds_export.save(str(logpath/"ref_embedding.ds"))
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
