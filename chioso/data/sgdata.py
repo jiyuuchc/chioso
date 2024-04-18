@@ -190,11 +190,12 @@ class SGData2D(struct.PyTreeNode):
 
         return cnts
 
-    def binning(self, bin_size: tuple[int, int], *, prune=True) -> SGData2D:
+    def binning(self, bin_size: tuple[int, int], *, prune=False) -> SGData2D:
         inner_idx = np.mgrid[: bin_size[0], : bin_size[1]]
         h, w = self.shape
         hh = h // bin_size[0] * bin_size[0]
         ww = w // bin_size[1] * bin_size[1]
+
         outer_idx = np.mgrid[: hh : bin_size[0], : ww : bin_size[1]]
 
         idx = outer_idx.reshape(2, -1, 1) + inner_idx.reshape(2, 1, -1)

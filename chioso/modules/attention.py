@@ -1,5 +1,7 @@
 from typing import Optional, Sequence
 
+from functools import partial
+
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -7,8 +9,69 @@ import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
-from .stem import SGDummyStem
+from .stem import dummy_stem
 from .predictor import MLP
+from ..data import SGData2D
+
+def _retrieve_value_at(img, loc, out_of_bound_value=0):
+
+    iloc = jnp.floor(loc).astype(int)
+    res = loc - iloc
+
+    offsets = jnp.asarray(
+        [[(i >> j) % 2 for j in range(len(loc))] for i in range(2 ** len(loc))]
+    )
+    ilocs = jnp.swapaxes(iloc + offsets, 0, 1)
+
+    weight = jnp.prod(res * (offsets == 1) + (1 - res) * (offsets == 0), axis=1)
+
+    max_indices = jnp.asarray(img.shape)[: len(loc), None]
+    values = jnp.where(
+        (ilocs >= 0).all(axis=0) & (ilocs < max_indices).all(axis=0),
+        jnp.swapaxes(img[tuple(ilocs)], 0, -1),
+        out_of_bound_value,
+    )
+
+    value = (values * weight).sum(axis=-1)
+
+    return value
+
+
+def sub_pixel_samples(
+    img: ArrayLike,
+    locs: ArrayLike,
+    out_of_bound_value: float = 0,
+    edge_indexing: bool = False,
+) -> Array:
+    """Retrieve image values as non-integer locations by interpolation
+
+    Args:
+        img: Array of shape [D1,D2,..,Dk, ...]
+        locs: Array of shape [d1,d2,..,dn, k]
+        out_of_bound_value: optional float constant, defualt 0.
+        edge_indexing: if True, the index for the top/left pixel is 0.5, otherwise 0. Default is False
+
+    Returns:
+        values: [d1,d2,..,dn, ...], float
+    """
+
+    loc_shape = locs.shape
+    img_shape = img.shape
+    d_loc = loc_shape[-1]
+
+    if edge_indexing:
+        locs = locs - 0.5
+
+    img = img.reshape(img_shape[:d_loc] + (-1,))
+    locs = locs.reshape(-1, d_loc)
+    op = partial(_retrieve_value_at, out_of_bound_value=out_of_bound_value)
+
+    values = jax.vmap(op, in_axes=(None, 0))(img, locs)
+    out_shape = loc_shape[:-1] + img_shape[d_loc:]
+
+    values = values.reshape(out_shape)
+
+    return values
 
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
@@ -145,37 +208,55 @@ class FPN(nn.Module):
 
 class CellAnnotator(nn.Module):
     embed: jax.Array
-    n_layers: int = 8
-
-    def att(self, x, weights):
-        weights = nn.sigmoid(weights)
+    shape2d: tuple[int,int] = (128,128)
+    depths: tuple[int] = (3,9,3)
+    dims: tuple[int] = (256, 384, 512)
+    fpn_dim: int = 384
+    roi: int = 8
+    att_ks: int = 8
+    normalize: bool = False
+    
+    def att(self, x0, weights):
         _, x0 = jax.lax.scan(
             lambda carry, s: (None, jax.lax.conv_general_dilated_local(
                 s[None, :, :, None],
                 weights[:,:,:,None],
                 (1,1),
                 "same",
-                (8,8),
+                (self.roi, self.roi),
                 dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
             ).squeeze(0).squeeze(-1)), 
             None,
-            x.transpose(2, 0, 1),
+            x0.transpose(2, 0, 1),
         )
         x0 = x0.transpose(1,2,0)
         return x0
 
     @nn.compact
-    def __call__(self, sg, *, training=False):
-        x0, reg_loss = SGDummyStem(embed=self.embed, rescale=True)(sg)
+    def __call__(self, cnts, gids, indptr, *, training=False):
+        sg = SGData2D(cnts, gids, indptr, self.shape2d, self.embed.shape[0])
+        gamma = self.param(
+            "gamma", lambda rng, shape: jnp.zeros(shape), (sg.n_genes)
+        )
+        x0 = dummy_stem(sg, self.embed, gamma=gamma)
 
-        x = ConvNeXt(2, depths=(3,3,27,3), dims=(256, 256, 384, 512))(x0, training=training)
-        x = FPN(384)(x)
-        x = nn.ConvTranspose(256, (3,3), (2,2))(x[0])
+        x = ConvNeXt(1,  depths=self.depths, dims=self.dims)(x0, training=training)
+        x = FPN(self.fpn_dim)(x)[0]
 
-        fg = nn.Dense(1)(x)
-        
-        weights = MLP(64, 3, deterministic=True)(x)
+        self.sow("intermediates", "features", x)
 
-        x = self.att(x0, weights)
+        weights = nn.sigmoid(MLP(self.att_ks ** 2, 3)(x, deterministic=True))
+        weights = weights.reshape(weights.shape[:-1] + (self.att_ks, self.att_ks))
+        weights = jax.image.resize(weights, weights.shape[:2] + (self.roi, self.roi), "linear")
+        weights = weights.reshape(weights.shape[:2] + (self.roi**2,))
 
-        return x, fg
+        self.sow("intermediates", "att_weights", weights)
+
+        out = self.att(x0, weights)
+
+        if self.normalize:
+            cnts = dummy_stem(sg, jnp.ones([self.embed.shape[0], 1]))
+            total_cnts = self.att(cnts, weights)
+            out = out / total_cnts
+
+        return out

@@ -26,6 +26,8 @@ def get_config():
     config.model.config.n_genes = 27504
     config.model.config.dim_out = 68
     config.model.config.dropout = 0.2
+    config.model.normalize = True
+    config.model.log_transform = False
 
     config.num_runs = 1
 

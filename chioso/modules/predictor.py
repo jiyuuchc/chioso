@@ -1,9 +1,12 @@
+from typing import Callable
+
 import flax.linen as nn
 import jax.numpy as jnp
 
 class SCEmbed(nn.Module):
     n_genes: int 
     dim: int = 256
+    normalize: bool = True    
 
     @nn.compact
     def __call__(self, gids, cnts):
@@ -11,7 +14,8 @@ class SCEmbed(nn.Module):
         cnts = jnp.where(mask, cnts, 0)
 
         x = nn.Embed(self.n_genes, self.dim)(gids)
-        cnts = cnts / cnts.sum(axis=-1, keepdims=True)
+        if self.normalize:
+            cnts = cnts / cnts.sum(axis=-1, keepdims=True)
 
         x = cnts @ x
 
@@ -49,15 +53,17 @@ class LinearPredictor(nn.Module):
     dim_hidden: int = 256
     n_layers: int = 6
     dropout: float =0.2    
+    normalize: bool = True
+    log_transform: bool = False
     
     def setup(self):
-        self.embed = SCEmbed(self.n_genes, self.dim_hidden)
+        self.embed = SCEmbed(self.n_genes, self.dim_hidden, self.normalize)
         self.mlp = MLP(self.dim_out, self.n_layers, dropout=self.dropout)
 
     def __call__(self, gids, cnts, *, training=False):
+        if self.log_transform:
+            cnts = jnp.log1p(cnts)
         x = self.embed(gids, cnts)
+        self.sow("intermediates", "feature", x)
         x = self.mlp(x, deterministic=not training)
         return x
-
-
-        

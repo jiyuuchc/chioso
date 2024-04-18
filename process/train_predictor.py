@@ -126,7 +126,7 @@ def main(_):
         run(config, logpath/str(i), random.randint(0, sys.maxsize))
 
 def run(config, logpath, seed):
-    logpath.mkdir(parents=True, exist_ok=True)
+    logpath.mkdir(parents=True, exist_ok=False)
 
     logging.info(f"Logging to {logpath.resolve()}")
 

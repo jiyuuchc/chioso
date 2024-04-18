@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Sequence, Callable
 
 import flax.linen as nn
 import jax
@@ -96,7 +96,7 @@ class SGAttention(nn.Module):
         return token
 
 
-class SGStem(nn.Module):
+class SGAttentionStem(nn.Module):
     dims: int = 64
     ffn_dims: int = 192
     n_layers: int = 3
@@ -153,60 +153,73 @@ class SGStem(nn.Module):
         return x
 
 
-class SGDummyStem(nn.Module):
-    embed: jnp.ndarray
+def dummy_stem(sg, tokens, normalize=False, gamma=None):
+    indices = sg.indices
+    cnts = sg.data
+    indptr = sg.indptr
+
+    n_entries = indices.shape[0]
+    n_pixels = sg.shape[0] * sg.shape[1]
+    masking = jnp.arange(n_entries) < indptr[-1]
+
+    cnts = jnp.where(masking, cnts, 0)
+    if gamma is not None:
+        cnts = cnts * jnp.exp(gamma[indices])
+
+    rpt = jnp.diff(indptr)
+    segms = jnp.repeat(
+        jnp.arange(len(rpt)),
+        rpt,
+        total_repeat_length=n_entries,
+    )
+
+    embeddings = tokens[indices] * cnts[:, None]
+
+    sum_cnts = jax.ops.segment_sum(
+        cnts,
+        segms,
+        num_segments=n_pixels,
+    )
+    embedding_sum = jax.ops.segment_sum(
+        embeddings,
+        segms,
+        num_segments=n_pixels,
+    )
+
+    if normalize:
+        out = embedding_sum / (sum_cnts[:, None] + 1e-8)
+    else:
+        out = embedding_sum
+
+    out = out.reshape(*sg.shape, tokens.shape[-1])
+
+    return out
+
+
+class SGStem(nn.Module):
+    feature_dim: int
     normalize: bool = False
-    rescale: bool = False
+    rescale: bool = True
+    token_init: Callable = nn.initializers.variance_scaling(1.0, 'fan_in', 'normal', out_axis=0)
 
     @nn.compact
-    def __call__(self, image, *, training=False):
-        indices = image.indices
-        cnts = image.data
-        indptr = image.indptr
+    def __call__(self, sg:SGData2D, *, rescale:bool=None, normalize:bool=None, training:bool=False):
+        if rescale is None:
+            rescale = self.rescale
 
-        n_entries = indices.shape[0]
-        n_pixels = image.shape[0] * image.shape[1]
-        masking = jnp.arange(n_entries) < indptr[-1]
+        if normalize is None:
+            normalize = self.normalize
 
-        cnts = jnp.where(masking, cnts, 0)
-        if self.rescale:
-            gamma = self.param(
-                "gamma", lambda rng, shape: jnp.zeros(shape), (image.n_genes)
-            )
-            cnts = cnts * jnp.exp(gamma[indices])
-
-
-        rpt = jnp.diff(indptr)
-        segms = jnp.repeat(
-            jnp.arange(len(rpt)),
-            rpt,
-            total_repeat_length=n_entries,
+        gamma = self.param(
+            "gamma", lambda rng, shape: jnp.zeros(shape), (sg.n_genes)
         )
 
-        embeddings = self.embed[indices] * cnts[:, None]
+        tokens = self.param("tokens", self.token_init, (sg.n_genes, self.feature_dim))
 
-        sum_cnts = jax.ops.segment_sum(
-            cnts,
-            segms,
-            num_segments=n_pixels,
-        )
-        embedding_sum = jax.ops.segment_sum(
-            embeddings,
-            segms,
-            num_segments=n_pixels,
-        )
-
-        if self.normalize:
-            out = embedding_sum / (sum_cnts[:, None] + 1e-8)
+        if rescale:
+            out = dummy_stem(sg, tokens, normalize=normalize, gamma=gamma)
         else:
-            out = embedding_sum
+            out = dummy_stem(sg, tokens, normalize=normalize)
 
-        out = out.reshape(image.shape[0], image.shape[1], self.embed.shape[-1])
+        return out
 
-        if not self.rescale:
-
-            return out
-
-        else:
-
-            return out, (gamma ** 2).sum()
