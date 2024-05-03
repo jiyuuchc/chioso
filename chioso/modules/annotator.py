@@ -13,66 +13,6 @@ from .stem import dummy_stem
 from .predictor import MLP
 from ..data import SGData2D
 
-def _retrieve_value_at(img, loc, out_of_bound_value=0):
-
-    iloc = jnp.floor(loc).astype(int)
-    res = loc - iloc
-
-    offsets = jnp.asarray(
-        [[(i >> j) % 2 for j in range(len(loc))] for i in range(2 ** len(loc))]
-    )
-    ilocs = jnp.swapaxes(iloc + offsets, 0, 1)
-
-    weight = jnp.prod(res * (offsets == 1) + (1 - res) * (offsets == 0), axis=1)
-
-    max_indices = jnp.asarray(img.shape)[: len(loc), None]
-    values = jnp.where(
-        (ilocs >= 0).all(axis=0) & (ilocs < max_indices).all(axis=0),
-        jnp.swapaxes(img[tuple(ilocs)], 0, -1),
-        out_of_bound_value,
-    )
-
-    value = (values * weight).sum(axis=-1)
-
-    return value
-
-
-def sub_pixel_samples(
-    img: ArrayLike,
-    locs: ArrayLike,
-    out_of_bound_value: float = 0,
-    edge_indexing: bool = False,
-) -> Array:
-    """Retrieve image values as non-integer locations by interpolation
-
-    Args:
-        img: Array of shape [D1,D2,..,Dk, ...]
-        locs: Array of shape [d1,d2,..,dn, k]
-        out_of_bound_value: optional float constant, defualt 0.
-        edge_indexing: if True, the index for the top/left pixel is 0.5, otherwise 0. Default is False
-
-    Returns:
-        values: [d1,d2,..,dn, ...], float
-    """
-
-    loc_shape = locs.shape
-    img_shape = img.shape
-    d_loc = loc_shape[-1]
-
-    if edge_indexing:
-        locs = locs - 0.5
-
-    img = img.reshape(img_shape[:d_loc] + (-1,))
-    locs = locs.reshape(-1, d_loc)
-    op = partial(_retrieve_value_at, out_of_bound_value=out_of_bound_value)
-
-    values = jax.vmap(op, in_axes=(None, 0))(img, locs)
-    out_shape = loc_shape[:-1] + img_shape[d_loc:]
-
-    values = values.reshape(out_shape)
-
-    return values
-
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
     rate: float
@@ -87,7 +27,7 @@ class DropPath(nn.Module):
         if deterministic:
             return inputs
         else:
-            rng = self.make_rng("droppath")
+            rng = self.make_rng("dropout")
             binary_factor = jnp.floor(
                 keep_prob + jax.random.uniform(rng, dtype=inputs.dtype)
             )
@@ -188,6 +128,7 @@ class ConvNeXt(nn.Module):
 
         return outputs
 
+
 class FPN(nn.Module):
     out_channels: int = 256
 
@@ -208,13 +149,14 @@ class FPN(nn.Module):
 
 class CellAnnotator(nn.Module):
     embed: jax.Array
-    shape2d: tuple[int,int] = (128,128)
     depths: tuple[int] = (3,9,3)
     dims: tuple[int] = (256, 384, 512)
+    dropout: float = 0.4
     fpn_dim: int = 384
     roi: int = 8
     att_ks: int = 8
     normalize: bool = False
+    training: bool = False
     
     def att(self, x0, weights):
         _, x0 = jax.lax.scan(
@@ -233,14 +175,16 @@ class CellAnnotator(nn.Module):
         return x0
 
     @nn.compact
-    def __call__(self, cnts, gids, indptr, *, training=False):
-        sg = SGData2D(cnts, gids, indptr, self.shape2d, self.embed.shape[0])
+    def __call__(self, sg, *, training=None):
+        if training is None:
+            training = self.training
+        # sg = SGData2D(cnts, gids, indptr, self.shape2d, self.embed.shape[0])
         gamma = self.param(
             "gamma", lambda rng, shape: jnp.zeros(shape), (sg.n_genes)
         )
         x0 = dummy_stem(sg, self.embed, gamma=gamma)
 
-        x = ConvNeXt(1,  depths=self.depths, dims=self.dims)(x0, training=training)
+        x = ConvNeXt(1,  depths=self.depths, dims=self.dims, drop_path_rate=self.dropout)(x0, training=training)
         x = FPN(self.fpn_dim)(x)[0]
 
         self.sow("intermediates", "features", x)
@@ -257,6 +201,6 @@ class CellAnnotator(nn.Module):
         if self.normalize:
             cnts = dummy_stem(sg, jnp.ones([self.embed.shape[0], 1]))
             total_cnts = self.att(cnts, weights)
-            out = out / total_cnts
+            out = out / (total_cnts + 1e-6)
 
         return out

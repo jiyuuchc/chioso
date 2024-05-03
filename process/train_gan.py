@@ -14,13 +14,16 @@ import optax
 import orbax.checkpoint as ocp
 import pprint
 import tensorflow as tf
-# import wandb
+import wandb
 import tifffile
 
 from ml_collections import config_flags
+from skimage.transform import rescale
+from scipy.stats import pearsonr
 
-from xtrain import Trainer, TFDatasetAdapter, Adversal
+from xtrain import Trainer, GeneratorAdapter, Adversal
 from chioso.modules import CellAnnotator, MLP
+from chioso.data import SGData2D
 
 backend = jax.default_backend()
 tf.config.set_visible_devices([], "GPU")
@@ -30,23 +33,44 @@ _FLAGS = flags.FLAGS
 flags.DEFINE_string("logpath", ".", "")
 
 def get_ds(config):
+    ds_path = Path(config.dataset.path) / (config.dataset.name + ".ds")
     main_ds = (
-        tf.data.Dataset.load(str(config.dataset.train))
+        tf.data.Dataset.load(str(ds_path))
         .map(lambda x, y: x)
         .repeat()
     )
-    # mask = tf.constant(config.dataset.mask)
 
     ref_ds = tf.data.Dataset.load(str(
-        Path(config.predictor.checkpoint) / "ref_embedding.ds"    
+        Path(config.predictor.checkpoint) / config.dataset.ref_name
     )).repeat().batch(config.train.ref_batch_size)
 
-    combined_ds = tf.data.Dataset.zip(main_ds, ref_ds).map(lambda x,y: [(x,y)]).prefetch(1)
+    combined_ds = tf.data.Dataset.zip(main_ds, ref_ds).prefetch(1)
 
     logging.debug(combined_ds.element_spec)
 
-    return combined_ds
+    def _generator():
+        for sg_data, ref_data in combined_ds.as_numpy_iterator():
+            sg = SGData2D(*sg_data, shape=config.dataset.patch_shape, n_genes=config.dataset.n_genes)
+            sg = sg.binning([config.dataset.binning, config.dataset.binning])
+            sg = sg.pad_to_bucket_size(config.dataset.bucket_size)
 
+            yield (sg, ref_data), None 
+
+    return GeneratorAdapter(_generator)
+
+def get_label(config):
+    import h5py
+    h5file = Path(config.dataset.path) / (config.dataset.name + ".h5")
+    try:
+        with h5py.File(h5file, 'r') as data:
+            label = data["uns/dapi_segm"][...]
+
+        label = rescale((label>0).astype(float), 1/config.dataset.binning)
+
+        return label
+    except:
+        return None 
+  
 def get_models(config):
     params = ocp.StandardCheckpointer().restore(
         (Path(config.predictor.checkpoint) / "checkpoint").absolute(),
@@ -57,53 +81,57 @@ def get_models(config):
     mlp, var_mlp = predictor.mlp.unbind()
 
     embedding = params["embed"]["Embed_0"]["embedding"]
-    main_model = CellAnnotator(jnp.asarray(embedding), **config.model)
+    inner_model = CellAnnotator(jnp.asarray(embedding), **config.model)
+    model = Adversal(inner_model, MLP(1, 4, deterministic=True), loss_reduction_fn=None)
 
     def pred_fn(test_ds, variables):
         @jax.jit
         def _inner(data):
-            pred = main_model.apply(variables, *data)
+            pred = model.apply(variables, *data, training=False)
             logits = mlp.apply(
-                var_mlp, pred, deterministic=True
+                var_mlp, pred["output"], deterministic=True
             )
             ct = np.argmax(logits, axis=-1)
-            score = jax.nn.softmax(logits, axis=-1).max(axis=-1)
             dsc_loss = pred["dsc_loss_main"]
 
             return dict(
                 ct = ct,
-                score = score,
                 dsc_loss = dsc_loss
             )
 
         preds = []
-        for sgdata, (y0, x0) in test_ds.as_numpy_iterator():
-            pred = _inner(sgdata)
+        fake_ref_data = np.zeros([1, 256])
+        binning = config.dataset.binning
+        bs = config.dataset.border_size // binning
+
+        for sg_data, (y0, x0) in test_ds:
+            sg = SGData2D(*sg_data, shape=config.dataset.patch_shape, n_genes=config.dataset.n_genes)
+            sg = sg.binning([binning, binning])
+            sg = sg.pad_to_bucket_size(config.dataset.bucket_size)
+
+            pred = _inner((sg, fake_ref_data))
             pred = jax.tree_util.tree_map(lambda x: np.array(x), pred)
             pred.update(dict(
-                y0 = y0,
-                x0 = x0,
+                y0 = y0 // binning,
+                x0 = x0 // binning,
             ))
             preds.append(pred)
 
-        preds = jax.tree_util.tree_map(
-            lambda *x: tuple(x), *preds,
-        )
-
-        y_max, x_max = np.max(preds["y0"]), np.max(preds["x0"])
-        ps_y, ps_x = config.model.get("shape2d", (128,128))
+        y_max, x_max = y0 // binning, x0 // binning
+        ps_y, ps_x = config.dataset.patch_shape
+        ps_y = ps_y // binning
+        ps_x = ps_x // binning
         full_img = np.zeros([y_max + ps_y, x_max + ps_x], dtype="uint8")
-        score_img = np.zeros([y_max + ps_y, x_max + ps_x], dtype="float32")
         loss_img = np.zeros([y_max + ps_y, x_max + ps_x], dtype="float32")
 
-        for y0, x0, ct, score, dsc_loss in zip(preds["y0"], preds["x0"], preds["ct"], preds["score"], pred["dsc_loss"]):
-            full_img[y0:y0+ps_y, x0:x0+ps_x] = ct
-            score_img[y0:y0+ps_y, x0:x0+ps_x] = score.reshape(ps_y, ps_x)
-            loss_img[y0:y0+ps_y, x0:x0+ps_x] = dsc_loss.reshape(ps_y, ps_x)
+        for pred in preds:
+            y0, x0 = pred["y0"], pred["x0"]
+            full_img[y0+bs:y0+ps_y-bs, x0+bs:x0+ps_x-bs] = pred["ct"].reshape(ps_y, ps_x)[bs:-bs,bs:-bs]
+            loss_img[y0+bs:y0+ps_y-bs, x0+bs:x0+ps_x-bs] = pred["dsc_loss"].reshape(ps_y, ps_x)[bs:-bs,bs:-bs]
 
-        return full_img, score_img
+        return full_img, loss_img
 
-    return main_model, pred_fn
+    return model, pred_fn
 
 def loss_fn(batch, prediction):
     loss_main = prediction["dsc_loss_main"]
@@ -123,19 +151,25 @@ def run(config, logpath, seed):
 
     combined_ds = get_ds(config)
 
-    main_model, pred_fn = get_models(config)
+    model, pred_fn = get_models(config)
+
+    gt_fg = get_label(config)
 
     trainer = Trainer(
-        model = Adversal(main_model, MLP(1, 4), loss_reduction_fn=None),
-        optimizer = optax.inject_hyperparams(optax.adamw)(config.train.lr, weight_decay=config.train.weight_decay),
+        model = model,
+        optimizer = optax.adamw(config.train.lr, weight_decay=config.train.weight_decay),
         # losses = ("dsc_loss_main", "dsc_loss_ref"),
         losses = loss_fn,
         seed=seed,
     )
 
-    train_it = trainer.train(TFDatasetAdapter(combined_ds), training=True)
+    train_it = trainer.train(combined_ds, training=True)
 
-    test_ds = tf.data.Dataset.load(str(config.dataset.train))
+    test_ds = tf.data.Dataset.load(str(Path(config.dataset.path) / (config.dataset.name + ".ds")))
+
+    # full_img, loss_img = pred_fn(test_ds, dict(params=train_it.parameters))
+    # tifffile.imwrite(logpath/"ct-0.tiff", full_img)
+    # tifffile.imwrite(logpath/"loss-0.tiff", loss_img)
 
     for steps in range(config.train.train_steps):
         next(train_it)
@@ -147,13 +181,19 @@ def run(config, logpath, seed):
 
             # eval
             cp_step = (steps + 1) // config.train.validation_interval
-            full_img, score_img = pred_fn(test_ds, dict(params=train_it.parameters["main_module"]))
-            # full_img = (full_img + 1) * config.dataset.mask
+            full_img, loss_img = pred_fn(test_ds, dict(params=train_it.parameters))
             tifffile.imwrite(logpath/f"ct-{cp_step}.tiff", full_img)
-            tifffile.imwrite(logpath/f"score-{cp_step}.tiff", score_img)
+            tifffile.imwrite(logpath/f"loss-{cp_step}.tiff", loss_img)
+
+            if gt_fg is not None:
+                h,w = gt_fg.shape
+                pred_fg = loss_img[:h, :w]
+                corr = pearsonr(pred_fg.reshape(-1), gt_fg.reshape(-1))
+                print(f"corr = {corr}")
+                wandb.log(dict(corr=corr))
 
     ocp.StandardCheckpointer().save(
-        (logpath/"checkpoint").absolute(),
+        (logpath/f"cp_{cp_step}").absolute(),
         args=ocp.args.StandardSave(train_it),
     )
 
@@ -161,18 +201,20 @@ def main(_):
     config = _CONFIG.value
     pprint.pp(config)
 
-    # wandb.init(project="mosta", group=config.name)
-    # wandb.config.update(config.to_dict())
+    wandb.init(project="mosta", group=config.name)
+    wandb.config.update(config.to_dict())
 
     logpath = Path(_FLAGS.logpath)
+
     seed = config.train.get("seed", 42)
     random.seed(seed)
+
     run(config, logpath, seed)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # wandb.login()
+    wandb.login()
 
     app.run(main)

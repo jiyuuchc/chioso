@@ -243,6 +243,54 @@ class SGData2D(struct.PyTreeNode):
             n_genes = n_genes,
         )
 
+    def pad(self, pad_width, copy=False):
+        def _input_error():
+            raise ValueError(f"pad_width should be of format: ((y_padding_left, y_padding_right), (x_padding_left, x_padding_right)) or (padding_left, padding_right) or (padding). Got {pad_width} instead.")
+
+        if  hasattr(pad_width, "__len__") and len(pad_width) == 1:
+            pad_width = pad_width[0]
+
+        if isinstance(pad_width, int):
+            yl = yr = xl = xr = pad_width
+        else:
+            try:
+                p1, p2 = pad_width
+            except:
+                _input_error()
+
+            if isinstance(p1, int) and isinstance(p2, int):       
+                yl = xl = p1
+                yr = xr = p2
+            else:
+                try:
+                    yl, yr = p1
+                    xl, xr = p2
+                except:
+                    _input_error()
+
+        yl, yr, xl, xr = int(yl), int(yr), int(xl), int(xr)
+
+        h0, w0 = self.shape
+        new_indptr = np.zeros([h0 + yl + yr, w0 + xl + xr], dtype=self.indptr.dtype)
+        new_indptr[yl:yl+h0, xl:xl+w0] = self.indptr[1:].reshape(h0, w0)
+        new_indptr[:, xl+w0:] = new_indptr[:, xl+w0-1:xl+w0]
+        new_indptr[yl+1:yl+h0, :xl] = new_indptr[yl:yl+h0-1, -1:]
+        new_indptr[yl+h0:, :] = self.indptr[-1]
+        new_indptr = np.r_[0, new_indptr.flat]
+
+        if copy:
+            return self.replace(
+                data = self.data.copy(),
+                indices = self.indices.copy(),
+                indptr = new_indptr,
+                shape = (h0 + yl + yr, w0 + xl + xr),
+            )
+        else:
+            return self.replace(
+                indptr = new_indptr,
+                shape = (h0 + yl + yr, w0 + xl + xr),
+            )
+        
 
     @classmethod
     def from_csr(cls, csr: csr_array, shape: tuple[int, int], bucket_size: int = -1):

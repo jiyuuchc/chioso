@@ -30,8 +30,8 @@ flags.DEFINE_string("outdir", ".", "")
 flags.DEFINE_multi_string("comments", ["#"], "")
 flags.DEFINE_integer("skiprows", 0, "")
 flags.DEFINE_bool("writeh5", True, "")
-flags.DEFINE_integer("bucketsize", 524288, "")
-flags.DEFINE_integer("patchsize", 512, "")
+flags.DEFINE_integer("patchsize", 1024, "")
+flags.DEFINE_integer("gridsize", 768, "")
 flags.DEFINE_string("label", None, "")
 
 def load_gem():
@@ -107,8 +107,8 @@ def write_ds(sg):
     gemfile = Path(_FLAGS.data)
     outdir = Path(_FLAGS.outdir)
     outfile = outdir / (gemfile.stem + ".ds")
-    gs = _FLAGS.patchsize
-    bucketsize = _FLAGS.bucketsize
+    ps, gs = _FLAGS.patchsize, _FLAGS.gridsize
+    # bucketsize = _FLAGS.bucketsize
     binning = _FLAGS.binning
 
     if outfile.exists():
@@ -116,12 +116,15 @@ def write_ds(sg):
 
     def mosta_ds_gen():
         h, w = sg.shape
-        for y0 in range(0, h-gs, gs):
-            for x0 in range(0, w-gs, gs):
-                sgc = sg[y0:y0+gs, x0:x0+gs]
+        h_pad = (h-ps-1) // gs * gs + gs + ps 
+        w_pad = (w-ps-1) // gs * gs + gs + ps
+        sg_pad = sg.pad(((0, h_pad-h), (0, w_pad-w)))
+        for y0 in range(0, h_pad, gs):
+            for x0 in range(0, w_pad, gs):
+                sgc = sg_pad[y0:y0+ps, x0:x0+ps]
                 if binning != 1:
                     sgc = sgc.binning([binning, binning])
-                sgc = sgc.pad_to_bucket_size(bucket_size=bucketsize)
+                # sgc = sgc.pad_to_bucket_size(bucket_size=bucketsize)
 
                 yield ((sgc.data, sgc.indices, sgc.indptr), (y0 // binning, x0 // binning))
 
@@ -133,7 +136,7 @@ def write_ds(sg):
                 (
                     tf.TensorSpec([None],tf.int32),
                     tf.TensorSpec([None],tf.int32),
-                    tf.TensorSpec([gs*gs//binning//binning+1],tf.int32)
+                    tf.TensorSpec([ps*ps//binning//binning+1],tf.int32)
                 ) ,
                 (
                     tf.TensorSpec([],tf.int32),
@@ -154,10 +157,10 @@ def main(_):
     else:
         label = None
 
-    logging.info("Reading gem file ... ")
+    logging.info("Reading sg data ... ")
     sg = load_gem()
 
-    if _FLAGS.writeh5:
+    if _FLAGS.writeh5 and Path(_FLAGS.data).suffix != ".h5":
         logging.info("Writing h5 file ... ")
         write_h5(sg, label)
 
