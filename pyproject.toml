@@ -7,8 +7,9 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-xtrain = "^0.2.0"
+xtrain = "^0.2.3"
 orbax-checkpoint = "^0.5, <=0.5.3"
+pydensecrf = {git = "https://github.com/lucasb-eyer/pydensecrf.git"}
 
 [tool.poetry.group.dev.dependencies]
 jax = { extras = ["cuda11_pip"], version = "0.4.24" }
