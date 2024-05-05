@@ -148,15 +148,14 @@ class FPN(nn.Module):
         return outputs
 
 class CellAnnotator(nn.Module):
-    embed: jax.Array
+    predictor: nn.Module
+    # embed: jax.Array
     depths: tuple[int] = (3,9,3)
     dims: tuple[int] = (256, 384, 512)
     dropout: float = 0.4
     fpn_dim: int = 384
     roi: int = 8
     att_ks: int = 8
-    normalize: bool = False
-    training: bool = False
     
     def att(self, x0, weights):
         _, x0 = jax.lax.scan(
@@ -175,14 +174,25 @@ class CellAnnotator(nn.Module):
         return x0
 
     @nn.compact
-    def __call__(self, sg, *, training=None):
-        if training is None:
-            training = self.training
+    def __call__(self, sg, *, training=False):
+        
         # sg = SGData2D(cnts, gids, indptr, self.shape2d, self.embed.shape[0])
+        
         gamma = self.param(
             "gamma", lambda rng, shape: jnp.zeros(shape), (sg.n_genes)
         )
-        x0 = dummy_stem(sg, self.embed, gamma=gamma)
+
+        if not self.has_variable("params", "predictor"): #during init
+            _ = self.predictor(sg.indices, sg.data, training=training)
+
+        tokens = jax.lax.stop_gradient(self.variables["params"]["predictor"]["embed"]["Embed_0"]["embedding"])
+
+        if self.predictor.log_transform:
+            sg = sg.replace(data = jnp.log1p(sg.data) + gamma[sg.indices])
+        else:
+            sg = sg.replace(data = sg.data * jnp.exp(gamma[sg.indices]))
+
+        x0 = dummy_stem(sg, tokens)
 
         x = ConvNeXt(1,  depths=self.depths, dims=self.dims, drop_path_rate=self.dropout)(x0, training=training)
         x = FPN(self.fpn_dim)(x)[0]
@@ -196,11 +206,16 @@ class CellAnnotator(nn.Module):
 
         self.sow("intermediates", "att_weights", weights)
 
-        out = self.att(x0, weights)
+        x = self.att(x0, weights)
 
-        if self.normalize:
-            cnts = dummy_stem(sg, jnp.ones([self.embed.shape[0], 1]))
+        if self.predictor.normalize:
+            cnts = dummy_stem(sg, jnp.ones([tokens.shape[0], 1]))
             total_cnts = self.att(cnts, weights)
-            out = out / (total_cnts + 1e-6)
+            x = x / (total_cnts + 1e-6)
+
+        if self.is_mutable_collection("adversal"):
+            self.variable("adversal", "x", lambda _ : None, None).value = x
+
+        out = self.predictor.mlp(x, deterministic=True)
 
         return out

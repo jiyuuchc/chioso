@@ -6,12 +6,16 @@ import jax.numpy as jnp
 class SCEmbed(nn.Module):
     n_genes: int 
     dim: int = 256
-    normalize: bool = True    
+    normalize: bool = False
+    log_transform: bool = False
 
     @nn.compact
     def __call__(self, gids, cnts):
         mask = gids >= 0
         cnts = jnp.where(mask, cnts, 0)
+
+        if self.log_transform:
+            cnts = jnp.log1p(cnts)
 
         x = nn.Embed(self.n_genes, self.dim)(gids)
         if self.normalize:
@@ -57,12 +61,10 @@ class LinearPredictor(nn.Module):
     log_transform: bool = False
     
     def setup(self):
-        self.embed = SCEmbed(self.n_genes, self.dim_hidden, self.normalize)
+        self.embed = SCEmbed(self.n_genes, self.dim_hidden, self.normalize, self.log_transform)
         self.mlp = MLP(self.dim_out, self.n_layers, dropout=self.dropout)
 
     def __call__(self, gids, cnts, *, training=False):
-        if self.log_transform:
-            cnts = jnp.log1p(cnts)
         x = self.embed(gids, cnts)
         self.sow("intermediates", "feature", x)
         x = self.mlp(x, deterministic=not training)

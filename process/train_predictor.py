@@ -18,8 +18,8 @@ import tensorflow as tf
 import wandb
 
 from ml_collections import config_flags
-from pprint import pprint
 from sklearn.metrics import balanced_accuracy_score
+from sklearn.utils.class_weight import compute_class_weight
 
 from xtrain import Trainer, TFDatasetAdapter, VMapped
 
@@ -29,28 +29,11 @@ _CONFIG = config_flags.DEFINE_config_file("config")
 _FLAGS = flags.FLAGS
 flags.DEFINE_string("logpath", ".", "")
 
-def ce_loss(batch, prediction, balanced=True):
+def ce_loss(batch, prediction, cls_weight=None):
     inputs, label = batch
-    cls_weight = jnp.array([1.44054720e+00, 4.07123607e+00, 3.87952382e+00, 1.69368467e+01,
-        1.13068053e+02, 3.15893404e+01, 1.93404125e+00, 1.08074276e+01,
-        4.48241132e-01, 1.86840357e-01, 9.31950185e-01, 9.20956502e-01,
-        1.39022027e+00, 2.48050044e-01, 5.22962285e-01, 8.78469038e-01,
-        4.73429617e+00, 6.09021829e+00, 1.50411630e+02, 1.31054098e+01,
-        2.99723357e+01, 1.51945020e+01, 8.66994587e+00, 1.84481463e+00,
-        7.54689175e-01, 6.07217320e-01, 6.39425415e+00, 8.11707478e-01,
-        1.68958290e-01, 2.43608732e+01, 1.18289088e+01, 1.31579997e+01,
-        3.30995471e-01, 3.10156406e+00, 1.01015820e+01, 1.45228697e+00,
-        4.37348085e-01, 8.25937917e-01, 1.08899818e+00, 1.42069910e+01,
-        5.17759913e-01, 8.20974845e+00, 2.74345175e+00, 7.64685991e+00,
-        4.82386431e-01, 2.52894039e-01, 7.30934804e+00, 4.20381222e+01,
-        1.28285349e+01, 1.62486300e+01, 2.04068554e+00, 7.95674237e-01,
-        1.11347919e+00, 6.55794706e+02, 1.16275657e+01, 7.00037047e+00,
-        3.65141818e+01, 8.76730890e+00, 3.55251737e+00, 4.54151458e+01,
-        1.20293988e+00, 3.02767639e+00, 3.57233356e-01, 7.19862465e-01,
-        2.27091456e-01, 3.85625489e-01, 3.03828092e-01, 2.47881277e+00])
     y_true = batch[1]
     loss = optax.softmax_cross_entropy_with_integer_labels(prediction, y_true)
-    if balanced:
+    if cls_weight is not None:
         loss = loss * cls_weight[y_true]
     loss = loss.mean()
     return loss
@@ -77,13 +60,19 @@ class BalancedAcc:
 
 def get_ds(config):
     padding = config.dataset.get("padding", 4096)
-    n_tome_genes = config.dataset.get("n_tome_genes", 49585)
+    val_frac = config.train.get("val_split", 0.2)
 
-    def pre_process(idx, cnt, gt):
-        return (idx, cnt), gt
+    ds = tf.data.Dataset.load(config.dataset.path)
 
-    ds_train = (
-        tf.data.Dataset.load(config.dataset.train)
+    y_true = list(ds.map(lambda a,b,c: c).as_numpy_iterator())
+    y_true = np.array(y_true)
+    cls_weight = compute_class_weight("balanced", classes=np.unique(y_true), y=y_true)
+
+    train_split = (
+        ds
+        .enumerate()
+        .filter(lambda i, _: int(float(i+1) * val_frac) == int(float(i) * val_frac))
+        .map(lambda _, x: x)
         .map(lambda gid, cnt, gt: ((gid, cnt), gt))
         .repeat()
         .shuffle(12800)
@@ -94,10 +83,14 @@ def get_ds(config):
             ),
         )    
         .prefetch(1)
-    ) 
+        
+    )
 
-    ds_val = (
-        tf.data.Dataset.load(config.dataset.val)
+    val_split = (
+        ds
+        .enumerate()
+        .filter(lambda i, _: int(float(i+1) * val_frac) > int(float(i) * val_frac))
+        .map(lambda _, x: x)
         .map(lambda gid, cnt, gt: ((gid, cnt), gt))
         .padded_batch(
             config.train.batchsize,
@@ -107,13 +100,13 @@ def get_ds(config):
             drop_remainder=True,
         )    
         .prefetch(1)
-    ) 
+    )
 
-    return ds_train, ds_val
+    return train_split, val_split, cls_weight
 
 def main(_):
     config = _CONFIG.value
-    pprint(config)
+    print(config)
 
     wandb.init(project="mosta", group=config.name)
     wandb.config.update(config.to_dict())
@@ -121,16 +114,16 @@ def main(_):
     logpath = Path(_FLAGS.logpath)
     seed = config.train.get("seed", 42)
     random.seed(seed)
+    tf.random.set_seed(seed)
 
-    for i in range(config.get("num_runs", 1)):
-        run(config, logpath/str(i), random.randint(0, sys.maxsize))
+    run(config, logpath, random.randint(0, sys.maxsize))
 
 def run(config, logpath, seed):
-    logpath.mkdir(parents=True, exist_ok=False)
+    logpath.mkdir(parents=True, exist_ok=True)
 
     logging.info(f"Logging to {logpath.resolve()}")
 
-    ds_train, ds_val = get_ds(config)
+    ds_train, ds_val, cls_weight = get_ds(config)
 
     model = config.model.type(**config.model.config)
     balanced = config.train.get("balanced_loss", True)
@@ -145,7 +138,7 @@ def run(config, logpath, seed):
     trainer = Trainer(
         model = model,
         optimizer = tx,
-        losses = partial(ce_loss, balanced=balanced),
+        losses = partial(ce_loss, cls_weight=jnp.array(cls_weight)),
         strategy= VMapped,
         seed = seed,
     )    
@@ -202,20 +195,23 @@ def run(config, logpath, seed):
         args=ocp.args.StandardSave(train_it),
     )
 
-    logging.info("Record reference cell features") 
+    logging.info("Record reference cell features")
     embedding = tf.constant(train_it.parameters["embed"]["Embed_0"]["embedding"])
+    # FIXME implement using nn.apply and JIT
     def _agg(indices, cnts, gt):
         cnts = tf.cast(cnts, tf.float32)
-        cnts = cnts / tf.reduce_sum(cnts)
+        if model.log_transform:
+            cnts = tf.math.log1p(cnts)
+        if model.normalize:
+            cnts = cnts / tf.reduce_sum(cnts)
         x = cnts[None,:] @ tf.gather(embedding, indices)
         return x[0]
 
     ds_export = (
-        tf.data.Dataset.load(config.dataset.train)
-        .concatenate(tf.data.Dataset.load(config.dataset.val))
+        tf.data.Dataset.load(config.dataset.path)
         .map(_agg)
     )
-    ds_export.save(str(logpath/"ref_embedding.ds"))
+    ds_export.save(str(logpath/config.dataset.outname))
 
 
 if __name__ == "__main__":

@@ -309,7 +309,7 @@ class SGData2D(struct.PyTreeNode):
         return obj
 
     @classmethod
-    def from_h5ad(
+    def from_h5(
         cls,
         h5adfile: str | Path,
         lut: Callable | Mapping | ArrayLike | None = None,
@@ -362,8 +362,10 @@ class SGData2D(struct.PyTreeNode):
 
         if len(sg_list) == 0:
             _invalid_input()
+        elif len(sg_list) == 1:
+            return sg_list[0]
 
-        _indptr, _data, _indices, _n_genes = [], [], []
+        _indptr, _data, _indices, _n_genes = [], [], [], []
         for sg in sg_list:
             if not isinstance(sg, SGData2D):
                 _invalid_input()
@@ -399,8 +401,10 @@ class SGData2D(struct.PyTreeNode):
 
         if len(sg_list) == 0:
             _invalid_input()
+        elif len(sg_list) == 1:
+            return sg_list[0]
 
-        _indptr, _data, _indices, _n_genes = [], [], []
+        _indptr, _data, _indices, _n_genes = [], [], [], []
 
         width = sum([sg.shape[1] for sg in sg_list])
         height = [sg.shape[0] for sg in sg_list]
@@ -414,7 +418,7 @@ class SGData2D(struct.PyTreeNode):
             _n_genes.append(sg.n_genes)
             _indptr.append(np.diff(sg.indptr).reshape(sg.shape))
         _indptr = np.stack(_indptr, axis=1)
-        _indptr = np.r_[0, _indptr.flat]
+        _indptr = np.r_[0, np.cumsum(_indptr.flat)]
 
         for h in range(height):
             for sg in sg_list:
