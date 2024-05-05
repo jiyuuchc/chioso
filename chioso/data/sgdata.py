@@ -354,3 +354,80 @@ class SGData2D(struct.PyTreeNode):
             return obj, genes
         else:
             return obj
+
+    @classmethod
+    def vstack(cls, sg_list):
+        def _invalid_input():
+            raise ValueError("vstack() requies a sequence of SGData2D as input.")
+
+        if len(sg_list) == 0:
+            _invalid_input()
+
+        _indptr, _data, _indices, _n_genes = [], [], []
+        for sg in sg_list:
+            if not isinstance(sg, SGData2D):
+                _invalid_input()
+
+            if len(_indptr) == 0:
+                _indptr.append(sg.indptr)
+            else:
+                _indptr.append(sg.indptr[1:] + _indptr[-1][-1])
+            
+            _data.append(sg.data[:sg.indptr[-1]])
+            _indices.append(sg.indices[:sg.indptr[-1]])
+            _n_genes.append(sg.n_genes)
+
+        width = [sg.shape[1] for sg in sg_list]
+        if len(set(width)) > 1:
+            raise ValueError(f"vstack() requires all inputs to have the same 2d width. got {width}.")
+        width = width[0]
+
+        height = sum([sg.shape[0] for sg in sg_list])
+
+        return SGData2D(
+            data = np.concatenate(_data),
+            indices = np.concatenate(_indices),
+            indptr = np.concatenate(_indptr),
+            shape = (height, width),
+            n_genes = max(_n_genes),
+        )
+
+    @classmethod
+    def hstack(cls, sg_list):
+        def _invalid_input():
+            raise ValueError("hstack() requies a sequence of SGData2D as input.")
+
+        if len(sg_list) == 0:
+            _invalid_input()
+
+        _indptr, _data, _indices, _n_genes = [], [], []
+
+        width = sum([sg.shape[1] for sg in sg_list])
+        height = [sg.shape[0] for sg in sg_list]
+        if len(set(height)) > 1:
+            raise ValueError(f"hstack() requires all inputs to have the same 2d height. got {height}.")
+        height = height[0]
+
+        for sg in sg_list:
+            if not isinstance(sg, SGData2D):
+                _invalid_input()
+            _n_genes.append(sg.n_genes)
+            _indptr.append(np.diff(sg.indptr).reshape(sg.shape))
+        _indptr = np.stack(_indptr, axis=1)
+        _indptr = np.r_[0, _indptr.flat]
+
+        for h in range(height):
+            for sg in sg_list:
+                row_start = sg.indptr[h * sg.shape[1]]
+                row_end = sg.indptr[(h+1) * sg.shape[1]]
+                _data.append(sg.data[row_start:row_end])
+                _indices.append(sg.indices[row_start:row_end])
+
+        return SGData2D(
+            data = np.concatenate(_data),
+            indices = np.concatenate(_indices),
+            indptr = _indptr,
+            shape = (height, width),
+            n_genes = max(_n_genes),
+        )
+
