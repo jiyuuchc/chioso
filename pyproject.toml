@@ -7,7 +7,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-xtrain = "^0.2.3"
+xtrain = "^0.3.2"
 orbax-checkpoint = "^0.5, <=0.5.3"
 pydensecrf = {git = "https://github.com/lucasb-eyer/pydensecrf.git"}
 

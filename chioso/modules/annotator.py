@@ -156,6 +156,7 @@ class CellAnnotator(nn.Module):
     fpn_dim: int = 384
     roi: int = 8
     att_ks: int = 8
+    learned_scaling:bool = False
     
     def att(self, x0, weights):
         _, x0 = jax.lax.scan(
@@ -205,6 +206,9 @@ class CellAnnotator(nn.Module):
         weights = weights.reshape(weights.shape[:2] + (self.roi**2,))
 
         self.sow("intermediates", "att_weights", weights)
+
+        if self.learned_scaling:
+            x0 = x0 * jnp.exp(nn.Dense(1)(x))
 
         x = self.att(x0, weights)
 

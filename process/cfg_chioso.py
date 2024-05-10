@@ -19,8 +19,7 @@ def get_config():
 
     config.dataset = ml_collections.ConfigDict()
     config.dataset.path = "/home/FCAM/jyu/work/chioso/mosta/sg_data"
-    config.dataset.train_files = "E16.5_*.h5"
-    config.dataset.test_file = "E16.5_E1S3_labeled.h5"
+    config.dataset.train_files = "E16.5_E1*.h5"
     config.dataset.patch_size = 1024
     config.dataset.grid_size = 768
     config.dataset.binning = 4
@@ -29,17 +28,27 @@ def get_config():
     config.train = ml_collections.ConfigDict()
     config.train.seed = 4242
     config.train.train_steps = 25000
-    config.train.validation_interval = 2500
+    config.train.checkpoint_interval = 5000
     config.train.lr = 1e-3
     config.train.weight_decay = 1e-3
     config.train.ref_batch_size = 16384
 
-    config.model = ml_collections.ConfigDict()
-    config.model.roi = 8
-    config.model.depths = (3,9,3)
-    config.model.dims = (256, 384, 512)
-    config.model.dropout = 0.3
-    config.model.fpn_dim = 384
-    config.model.att_ks = 4
+    config.model = ml_collections.ConfigDict(dict(
+        depths = (3,9,3),
+        dims = (256, 384, 512),
+        dropout = 0.3,
+        fpn_dim = 384,
+        roi = 8,
+        att_ks = 4,
+        learned_scaling = False,
+    ))
+
+    config.discriminator = ml_collections.ConfigDict()
+    config.discriminator.n_layers = 4
+
+    config.inference = ml_collections.ConfigDict()
+    config.inference.sxy = 1.5
+    config.inference.compat = 10
+    config.inference.iters = 5
 
     return config

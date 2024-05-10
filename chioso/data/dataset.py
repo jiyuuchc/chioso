@@ -1,5 +1,7 @@
 import logging
 
+from functools import lru_cache
+
 import dataclasses
 import h5py
 import numpy as np
@@ -36,7 +38,9 @@ class SGDataset2D:
     def __post_init__(self):
         if self.group is not None:
             if self.group.attrs["type"] == "sgdataset2d":
+                self._read_block = lru_cache(maxsize=8)(self.__read_block)
                 return
+
         raise ValueError(f"The underlying h5 group {self.group} is not a proper SGDataset")
 
     def __repr__(self):
@@ -80,7 +84,7 @@ class SGDataset2D:
         w = max(w, x0 + w0)
         self.group.attrs["shape"] = h, w
     
-    def _read_block(self, block_loc):
+    def __read_block(self, block_loc):
         y0, x0 = block_loc
         sy, sx = self.block_size
 
