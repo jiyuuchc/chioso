@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "chioso"
 version = "0.0.0"
-description = ""
+description = "Tool for annotating HD spatial genomics data"
 authors = ["Ji Yu <jyu@uchc.edu>"]
 readme = "README.md"
 
@@ -10,19 +10,20 @@ python = "^3.10"
 xtrain = "^0.3.2"
 orbax-checkpoint = "^0.5, <=0.5.3"
 pydensecrf = {git = "https://github.com/lucasb-eyer/pydensecrf.git"}
+scikit-image = "^0.23.1"
+scikit-learn = "^1.4.2"
+tqdm = "^4.66.2"
+ml-collections = "^0.1.1"
+wandb = "^0.16.6"
+tensorflow = "^2.16.1"
 
 [tool.poetry.group.dev.dependencies]
-jax = { extras = ["cuda11_pip"], version = "0.4.24" }
-nvidia-cudnn-cu11 = "^8.0"
+#jax = { extras = ["cuda11_pip"], version = "0.4.24" }
+#nvidia-cudnn-cu11 = "^8.0"
 jupyterlab = "^4.1.6"
-tensorflow = "^2.16.1"
-wandb = "^0.16.6"
-matplotlib = "^3.8.4"
-ml-collections = "^0.1.1"
-tqdm = "^4.66.2"
-scikit-image = "^0.23.1"
 imagecodecs = "^2024.1.1"
-scikit-learn = "^1.4.2"
+matplotlib = "^3.8.4"
+tacco = "^0.3.0"
 
 [build-system]
 requires = ["poetry-core"]

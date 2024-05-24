@@ -21,7 +21,7 @@ def _format_slice(x, m):
 @dataclasses.dataclass
 class SGDataset2D:
     group: h5py.Group
-    dtype: np.dtype = np.dtype(int)
+    dtype: np.dtype = np.dtype("int32")
 
     @property
     def shape(self):
@@ -119,12 +119,18 @@ class SGDataset2D:
         logging.debug(f"retrieving blocks x: {x0b} - {x1b}, y:{y0b} - {y1b}")
 
         sg_list = []
-        for xb in range(x0b, x1b + sx, sx):
+        # for xb in range(x0b, x1b + sx, sx):
+        #     sg_list_inner = []
+        #     for yb in range(y0b, y1b + sy, sy):
+        #         sg_list_inner.append(self._read_block((yb, xb)))
+        #     sg_list.append(SGData2D.vstack(sg_list_inner))
+        # sg = SGData2D.hstack(sg_list)
+        for yb in range(y0b, y1b + sy, sy):
             sg_list_inner = []
-            for yb in range(y0b, y1b + sy, sy):
+            for xb in range(x0b, x1b + sx, sx):
                 sg_list_inner.append(self._read_block((yb, xb)))
-            sg_list.append(SGData2D.vstack(sg_list_inner))
-        sg = SGData2D.hstack(sg_list)
+            sg_list.append(SGData2D.hstack(sg_list_inner))
+        sg = SGData2D.vstack(sg_list)
 
         return sg, y0b, x0b
     

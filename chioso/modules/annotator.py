@@ -202,6 +202,7 @@ class CellAnnotator(nn.Module):
 
         weights = nn.sigmoid(MLP(self.att_ks ** 2, 3)(x, deterministic=True))
         weights = weights.reshape(weights.shape[:-1] + (self.att_ks, self.att_ks))
+        weights = weights.at[..., (self.att_ks-1)//2, (self.att_ks-1)//2].set(1.0) # fixed weight for the center location 
         weights = jax.image.resize(weights, weights.shape[:2] + (self.roi, self.roi), "linear")
         weights = weights.reshape(weights.shape[:2] + (self.roi**2,))
 

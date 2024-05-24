@@ -191,8 +191,9 @@ class SGData2D(struct.PyTreeNode):
         return cnts
 
     def binning(self, bin_size: tuple[int, int], *, prune=False) -> SGData2D:
-        inner_idx = np.mgrid[: bin_size[0], : bin_size[1]]
         h, w = self.shape
+
+        inner_idx = np.mgrid[: bin_size[0], : bin_size[1]]
         hh = h // bin_size[0] * bin_size[0]
         ww = w // bin_size[1] * bin_size[1]
 
@@ -309,51 +310,94 @@ class SGData2D(struct.PyTreeNode):
         return obj
 
     @classmethod
-    def from_h5(
-        cls,
-        h5adfile: str | Path,
-        lut: Callable | Mapping | ArrayLike | None = None,
-        *,
-        n_genes: int | None = None,
-        return_genes: bool = False,
-        bucket_size: int = -1,
-    ):
-        import h5py
-
-        with h5py.File(h5adfile, mode="r") as f:
-            cnts = np.asarray(f["X"]["data"])
-            indices = np.asarray(f["X"]["indices"])
-            indptr = np.asarray(f["X"]["indptr"])
-            genes = list(f["var/index"])
-            h, w = f["X"].attrs["2D_dimension"]
-
-        if lut is not None:
-            if isinstance(lut, Callable):
-                lut_arr = np.asarray([lut(g) for g in genes]).astype(int)
-            elif isinstance(lut, np.ndarray) or isinstance(lut, jnp.ndarray):
-                lut_arr = np.asarray(lut)
-            else:
-                lut_arr = np.asarray(
-                    [lut[g] if g in lut else -1 for g in genes]
-                ).astype(int)
-            indices = lut_arr[indices]
-            valid = indices >= 0
-            indices = np.where(valid, indices, 0)
-            cnts[~valid] = 0
-
-            if n_genes is None:
-                n_genes = indices.max() + 1
-
-        if n_genes is None:
-            n_genes = len(genes)
-
-        csr = csr_array((cnts, indices, indptr), shape=(h * w, n_genes))
-        obj = cls.from_csr(csr, (h, w), bucket_size=bucket_size)
-
-        if return_genes:
-            return obj, genes
+    def from_gem(cls, gemfile, gene_list = None, *, skiprows=1, comments='#'):
+        if gene_list is not None:
+            lut = dict(zip(gene_list, range(len(gene_list))))
         else:
-            return obj
+            lut = {}
+        
+        def conv_f(x):
+            x = x.decode()
+            if x in lut:
+                return lut[x]
+            elif gene_list is not None:
+                return -1
+            else:
+                lut[x] = len(lut)
+                return lut[x]
+
+        kwargs = dict(
+            skiprows = skiprows,
+            converters = {0: conv_f},
+            unpack = True,
+            dtype = "int32",
+            comments = comments,
+        )
+
+        gids, x, y, c = np.loadtxt(gemfile, **kwargs)
+
+        c = np.where(gids>=0, c, 0)
+        gids = np.where(gids >= 0, gids, 0)
+
+        x -= x.min()
+        y -= y.min()
+        h, w = y.max() + 1, x.max() + 1
+
+        rows = np.asarray(y * w + x).astype("int64")
+        cols = np.asarray(gids).astype("int64")
+
+        sa = csr_array((c, (rows, cols)), shape=(h * w, len(lut)))
+
+        sg = SGData2D.from_csr(sa, (h,w))
+
+        return sg
+
+    # @classmethod
+    # def from_h5(
+    #     cls,
+    #     h5adfile: str | Path,
+    #     lut: Callable | Mapping | ArrayLike | None = None,
+    #     *,
+    #     n_genes: int | None = None,
+    #     return_genes: bool = False,
+    #     bucket_size: int = -1,
+    # ):
+    #     import h5py
+
+    #     with h5py.File(h5adfile, mode="r") as f:
+    #         cnts = np.asarray(f["X"]["data"])
+    #         indices = np.asarray(f["X"]["indices"])
+    #         indptr = np.asarray(f["X"]["indptr"])
+    #         genes = list(f["var/index"])
+    #         h, w = f["X"].attrs["2D_dimension"]
+
+    #     if lut is not None:
+    #         if isinstance(lut, Callable):
+    #             lut_arr = np.asarray([lut(g) for g in genes]).astype(int)
+    #         elif isinstance(lut, np.ndarray) or isinstance(lut, jnp.ndarray):
+    #             lut_arr = np.asarray(lut)
+    #         else:
+    #             lut_arr = np.asarray(
+    #                 [lut[g] if g in lut else -1 for g in genes]
+    #             ).astype(int)
+    #         indices = lut_arr[indices]
+    #         valid = indices >= 0
+    #         indices = np.where(valid, indices, 0)
+    #         cnts[~valid] = 0
+
+    #         if n_genes is None:
+    #             n_genes = indices.max() + 1
+
+    #     if n_genes is None:
+    #         n_genes = len(genes)
+
+    #     csr = csr_array((cnts, indices, indptr), shape=(h * w, n_genes))
+    #     obj = cls.from_csr(csr, (h, w), bucket_size=bucket_size)
+
+    #     if return_genes:
+    #         return obj, genes
+    #     else:
+    #         return obj
 
     @classmethod
     def vstack(cls, sg_list):

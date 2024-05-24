@@ -47,6 +47,8 @@ class MLP(nn.Module):
             x = nn.LayerNorm(use_scale=False)(x)
             x = nn.gelu(x)
 
+        self.sow("intermediates", "latent", x)
+
         x = nn.Dense(self.out_dim)(x)
         return x
 
