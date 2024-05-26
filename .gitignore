@@ -133,3 +133,4 @@ dmypy.json
 # custom rules
 runs/
 mosta/
+process/
