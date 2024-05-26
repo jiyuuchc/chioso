@@ -30,15 +30,6 @@ _CONFIG = config_flags.DEFINE_config_file("config")
 _FLAGS = flags.FLAGS
 flags.DEFINE_string("logpath", ".", "")
 
-def gen(config, bm=None):
-    src = config.dataset.path
-    with ad.read_h5ad(src, backed='r') as adata:
-        
-
-    # adata.var_names_make_unique()
-
-    
-
 def ce_loss(batch, prediction, cls_weight=None):
     inputs, label = batch
     y_true = batch[1]
