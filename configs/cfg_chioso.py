@@ -11,14 +11,14 @@ def get_config():
     config.predictor = ml_collections.ConfigDict()
     config.predictor.model = predictor_cfg.model
     config.predictor.dataset = predictor_cfg.dataset
-    config.predictor.checkpoint = "./checkpoint/"
+    config.predictor.checkpoint = "."
 
     # overrides
     # config.predictor.model.config.normalize=False
     # config.predictor.model.config.log_transform=True
 
     config.dataset = ml_collections.ConfigDict()
-    config.dataset.path = "./"
+    config.dataset.path = "./sg_data/"
     config.dataset.train_files = "*.h5"
     config.dataset.patch_size = 1024
     config.dataset.grid_size = 1000

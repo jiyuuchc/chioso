@@ -7,7 +7,7 @@ def get_config():
     config.name = "celltype_linear_model"
 
     config.dataset = ml_collections.ConfigDict()
-    config.dataset.path = "."
+    config.dataset.path = "ref_data/tome.ds"
     config.dataset.outname = "ref_embedding.ds"
     config.dataset.dropout = 0.5
 
@@ -28,7 +28,7 @@ def get_config():
     config.model.config.dim_out = 68
     config.model.config.dropout = 0.2
     config.model.config.normalize = False
-    config.model.config.log_transform = True
+    config.model.config.log_transform = False
     config.model.config.dim_hidden = 256
 
     return config
