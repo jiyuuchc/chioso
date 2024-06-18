@@ -1,161 +1,42 @@
-from typing import Optional, Sequence
-
 from functools import partial
 
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import optax
 
 from jax import Array
 from jax.typing import ArrayLike
 
 from .stem import dummy_stem
 from .predictor import MLP
-from ..data import SGData2D
 
-class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
-    rate: float
+@jax.custom_vjp
+def gradient_reversal(x):
+    return x
 
-    @nn.module.compact
-    def __call__(
-        self, inputs: ArrayLike, deterministic: Optional[bool] = True
-    ) -> Array:
-        if self.rate == 0.0:
-            return inputs
-        keep_prob = 1.0 - self.rate
-        if deterministic:
-            return inputs
-        else:
-            rng = self.make_rng("dropout")
-            binary_factor = jnp.floor(
-                keep_prob + jax.random.uniform(rng, dtype=inputs.dtype)
-            )
-            output = inputs / keep_prob * binary_factor
-            return output
+def _gr_fwd(x):
+    return x, None
 
+def _gr_bwd(_, g):
+    return (jax.tree_util.tree_map(lambda v: -v, g),)
 
-class _Block(nn.Module):
-    """ConvNeXt Block.
-    Args:
-        drop_path (float): Stochastic depth rate. Default: 0.0
-        layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6.
-    """
+gradient_reversal.defvjp(_gr_fwd, _gr_bwd)
+""" A gradient reveral op. 
 
-    drop_rate: int = 0.4
-    layer_scale_init_value: float = 1e-6
-    kernel_size: int = 7
-
-    @nn.compact
-    def __call__(self, x: ArrayLike, *, training: Optional[bool] = None) -> Array:
-        dim = x.shape[-1]
-        ks = self.kernel_size
-        scale = self.layer_scale_init_value
-
-        shortcut = x
-
-        x = nn.Conv(dim, (ks, ks), feature_group_count=dim)(x)
-        x = nn.LayerNorm(epsilon=1e-6)(x)
-        x = nn.Dense(dim * 4)(x)
-        x = jax.nn.gelu(x)
-        x = nn.Dense(dim)(x)
-
-        if scale > 0:
-            gamma = self.param(
-                "gamma", lambda rng, shape: scale * jnp.ones(shape), (x.shape[-1])
-            )
-            x = x * gamma
-
-        deterministic = training is None or not training
-        x = DropPath(self.drop_rate)(x, deterministic=deterministic)
-
-        x = x + shortcut
-
-        return x
-
-
-""" Implements the convnext encoder. Described in https://arxiv.org/abs/2201.03545
-Original implementation: https://github.com/facebookresearch/ConvNeXt
+    This is a no-op during inference. During training, it does nothing
+    in the forward pass, but reverse the sign of gradient in backward
+    pass. Typically placed right before a discriminator in adversal 
+    training.
 """
-class ConvNeXt(nn.Module):
-    """ConvNeXt CNN backbone
-
-    Attributes:
-        patch_size: Stem patch size
-        depths: Number of blocks at each stage.
-        dims: Feature dimension at each stage.
-        drop_path_rate: Stochastic depth rate.
-        layer_scale_init_value: Init value for Layer Scale.
-    """
-
-    patch_size: int = 4
-    depths: Sequence[int] = (3, 3, 27, 3)
-    dims: Sequence[int] = (96, 192, 384, 768)
-    drop_path_rate: float = 0.0
-    layer_scale_init_value: float = 1e-6
-
-    @nn.compact
-    def __call__(
-        self, x: ArrayLike, *, training: Optional[bool] = None
-    ) -> list[Array]:
-        """
-        Args:
-            x: Image input.
-            training: Whether run the network in training mode (i.e. with stochastic depth)
-
-        Returns:
-            A list of features at various scales
-        """
-        dp_rate = 0
-        outputs = []
-        for k in range(len(self.depths)):
-            if k == 0:
-                ps = self.patch_size
-                x = nn.Conv(self.dims[k], (ps, ps), strides=(ps, ps))(x)
-                x = nn.LayerNorm(epsilon=1e-6)(x)
-            else:
-                x = nn.LayerNorm(epsilon=1e-6)(x)
-                x = nn.Conv(self.dims[k], (2, 2), strides=(2, 2))(x)
-
-            for _ in range(self.depths[k]):
-                x = _Block(dp_rate, self.layer_scale_init_value)(x, training=training)
-                dp_rate += self.drop_path_rate / (sum(self.depths) - 1)
-
-            outputs.append(x)
-
-        # keys = [str(k + 1 if self.patch_size == 2 else k + 2) for k in range(4)]
-        # encoder_out = dict(zip(keys, outputs))
-
-        return outputs
-
-
-class FPN(nn.Module):
-    out_channels: int = 256
-
-    @nn.compact
-    def __call__(self, inputs: Sequence[ArrayLike]) -> Sequence[Array]:
-        out_channels = self.out_channels
-
-        outputs = [jax.nn.relu(nn.Dense(out_channels)(x)) for x in inputs]
-
-        for k in range(len(outputs) - 1, 0, -1):
-            x = jax.image.resize(outputs[k], outputs[k - 1].shape, "nearest")
-            x += outputs[k - 1]
-            x = nn.Conv(out_channels, (3, 3))(x)
-            x = jax.nn.relu(x)
-            outputs[k - 1] = x
-
-        return outputs
 
 class CellAnnotator(nn.Module):
-    predictor: nn.Module
-    # embed: jax.Array
-    depths: tuple[int] = (3,9,3)
-    dims: tuple[int] = (256, 384, 512)
-    dropout: float = 0.4
-    fpn_dim: int = 384
+    tokens: Array
     roi: int = 8
     att_ks: int = 8
+    n_masks: int = 1
+    dsc_n_layers: int = 4
+    normalize: bool = False
     learned_scaling:bool = False
     
     def att(self, x0, weights):
@@ -174,53 +55,73 @@ class CellAnnotator(nn.Module):
         x0 = x0.transpose(1,2,0)
         return x0
 
+    def att_simple(self, x0, weights):
+        x = jax.lax.conv(
+            x0.transpose(2,0,1)[:, None, :, :],
+            weights[None, None, :, :],
+            [1,1],
+            "SAME",
+        )
+        x = x.squeeze(1).transpose(1,2,0)
+
+        return x
+        
     @nn.compact
-    def __call__(self, sg, *, training=False):
-        
-        # sg = SGData2D(cnts, gids, indptr, self.shape2d, self.embed.shape[0])
-        
+    def __call__(self, sg, ref_inputs=None, *, training=False):
         gamma = self.param(
             "gamma", lambda rng, shape: jnp.zeros(shape), (sg.n_genes)
         )
 
-        if not self.has_variable("params", "predictor"): #during init
-            _ = self.predictor(sg.indices, sg.data, training=training)
+        sg = sg.replace(data = sg.data * jnp.exp(gamma[sg.indices]))
 
-        tokens = jax.lax.stop_gradient(self.variables["params"]["predictor"]["embed"]["Embed_0"]["embedding"])
+        x0 = dummy_stem(sg, self.tokens)
 
-        if self.predictor.log_transform:
-            sg = sg.replace(data = jnp.log1p(sg.data) + gamma[sg.indices])
-        else:
-            sg = sg.replace(data = sg.data * jnp.exp(gamma[sg.indices]))
-
-        x0 = dummy_stem(sg, tokens)
-
-        x = ConvNeXt(1,  depths=self.depths, dims=self.dims, drop_path_rate=self.dropout)(x0, training=training)
-        x = FPN(self.fpn_dim)(x)[0]
-
-        self.sow("intermediates", "features", x)
-
-        weights = nn.sigmoid(MLP(self.att_ks ** 2, 3)(x, deterministic=True))
-        weights = weights.reshape(weights.shape[:-1] + (self.att_ks, self.att_ks))
-        weights = weights.at[..., (self.att_ks-1)//2, (self.att_ks-1)//2].set(1.0) # fixed weight for the center location 
-        weights = jax.image.resize(weights, weights.shape[:2] + (self.roi, self.roi), "linear")
-        weights = weights.reshape(weights.shape[:2] + (self.roi**2,))
-
-        self.sow("intermediates", "att_weights", weights)
+        weights = nn.sigmoid(
+            self.param("weights", nn.initializers.truncated_normal(), (self.n_masks, self.att_ks, self.att_ks))
+        )
+        weights = weights.at[:, (self.att_ks-1)//2, (self.att_ks-1)//2].set(1.0) # fixed weight for the center location 
+        weights = jax.image.resize(weights, (self.n_masks, self.roi, self.roi), "linear")
 
         if self.learned_scaling:
             x0 = x0 * jnp.exp(nn.Dense(1)(x))
 
-        x = self.att(x0, weights)
+        if self.normalize:
+            cnts = dummy_stem(sg, jnp.ones([self.tokens.shape[0], 1]))            
 
-        if self.predictor.normalize:
-            cnts = dummy_stem(sg, jnp.ones([tokens.shape[0], 1]))
-            total_cnts = self.att(cnts, weights)
-            x = x / (total_cnts + 1e-6)
+        def scan_fn(_, w):
+            result = self.att_simple(x0, w)
 
-        if self.is_mutable_collection("adversal"):
-            self.variable("adversal", "x", lambda _ : None, None).value = x
+            if self.normalize:
+                total_cnts = self.att_simple(cnts, w)
+                result /= total_cnts + 1e-6
 
-        out = self.predictor.mlp(x, deterministic=True)
+            return None, result
 
-        return out
+        _, x = jax.lax.scan(
+            scan_fn,
+            None,
+            weights,
+        )
+        # x = self.att_simple(x0, weights)
+
+        x = gradient_reversal(x)
+
+        dsc = MLP(1, self.dsc_n_layers, deterministic=True)
+
+        dsc_x = dsc(x)
+        idx = jnp.argmin(dsc_x, axis=0, keepdims=True)
+        dsc_x = jnp.take_along_axis(dsc_x, idx, 0).squeeze(0)
+        x_out = jnp.take_along_axis(x, idx, 0).squeeze(0)
+        dsc_loss_main = optax.sigmoid_binary_cross_entropy(dsc_x, jnp.ones_like(dsc_x))
+
+        if ref_inputs is not None:
+            dsc_y = dsc(ref_inputs)
+            dsc_loss_ref = optax.sigmoid_binary_cross_entropy(dsc_y, jnp.zeros_like(dsc_y))
+        else:
+            dsc_loss_ref = None
+            
+        return dict(
+            dsc_loss_main = dsc_loss_main,
+            dsc_loss_ref = dsc_loss_ref,
+            output = x_out,
+        )

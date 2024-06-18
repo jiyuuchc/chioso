@@ -86,7 +86,7 @@ def get_ds(config):
     return GeneratorAdapter(train_data_gen)
 
 
-def checkpoint(config, train_it, dst):
+def checkpoint(config, train_it, dst, predictor):
     dst.mkdir(parents=True, exist_ok=True)
 
     ps = config.dataset.patch_size
@@ -135,11 +135,12 @@ def checkpoint(config, train_it, dst):
                     method=_model_apply,
                 )
 
-                for (pred, y0, x0), _ in predict_iter:
+                for pred, y0, x0 in predict_iter:
                     y0, x0 = y0 + bs, x0 + bs
                     y1, x1 = y0 + gs//binning, x0 + gs//binning
+                    pred["cls"] = predictor(pred["output"], deterministic=True)
 
-                    cls_predict[y0 : y1, x0 : x1] = np.argmax(pred["output"][bs:-bs, bs:-bs], axis=-1)
+                    cls_predict[y0 : y1, x0 : x1] = np.argmax(pred["cls"][bs:-bs, bs:-bs], axis=-1)
                     fg_logits[y0 : y1, x0 : x1] = pred["dsc_loss_main"][bs:-bs, bs:-bs, 0]
 
                 tifffile.imwrite(dst/f"{input_path.stem}_cls_predict.tif", cls_predict)
@@ -162,18 +163,22 @@ def get_model(config):
     params = ocp.StandardCheckpointer().restore(
         (Path(config.predictor.checkpoint) / "checkpoint").absolute(),
     )["train_state"]["params"]
+    tokens = params["embed"]["Embed_0"]["embedding"]
 
-    predictor = config.predictor.model.type(**config.predictor.model.config)
-
-    inner_model = CellAnnotator(predictor, **config.model)
-    model = Adversal(
-        inner_model, 
-        MLP(1, config.discriminator.n_layers, deterministic=True), 
-        collection_name="adversal", 
-        loss_reduction_fn=None,
+    predictor = (
+        config.predictor.model.type(**config.predictor.model.config)
+        .bind(dict(params=params))
+        .mlp
     )
 
-    return model, params
+    model = CellAnnotator(tokens, **config.model)
+    # model = Adversal(
+    #     inner_model, 
+    #     MLP(1, config.discriminator.n_layers, deterministic=True),
+    #     loss_reduction_fn=None,
+    # )
+
+    return model, predictor
 
 
 def run(config, logpath):
@@ -183,7 +188,7 @@ def run(config, logpath):
 
     train_ds = get_ds(config)
 
-    model,params = get_model(config)
+    model, predictor = get_model(config)
     
     def loss_fn(batch, prediction):
         loss_main = prediction["dsc_loss_main"]
@@ -203,12 +208,9 @@ def run(config, logpath):
         # losses = ("dsc_loss_main", "dsc_loss_ref"),
         losses = loss_fn,
         seed=config.train.seed,
-        mutable="adversal",
     )
 
     train_it = trainer.train(train_ds, training=True)
-    train_it.parameters["main_module"]["predictor"] = params
-    train_it.freeze("main_module/predictor")
 
     # checkpoint(config, train_it, logpath / "checkpoint_0")
 
@@ -217,7 +219,6 @@ def run(config, logpath):
 
         if (steps + 1) % config.train.checkpoint_interval == 0:
             print(train_it.loss_logs)
-            # print(train_it.variables)
 
             train_it.reset_loss_logs()
 
@@ -225,7 +226,7 @@ def run(config, logpath):
             cp_step = (steps + 1) // config.train.checkpoint_interval
             cp_dir = logpath / f"checkpoint_{cp_step}"
 
-            checkpoint(config, train_it, cp_dir)
+            checkpoint(config, train_it, cp_dir, predictor)
 
 
 def main(_):
