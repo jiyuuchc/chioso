@@ -178,6 +178,7 @@ class CellAnnotator(nn.Module):
     def __call__(self, sg, *, training=False):
         
         # sg = SGData2D(cnts, gids, indptr, self.shape2d, self.embed.shape[0])
+        # scale = self.param("scale", lambda rng, shape: jnp.ones(shape) * 1e-6, [1])
         
         gamma = self.param(
             "gamma", lambda rng, shape: jnp.zeros(shape), (sg.n_genes)
@@ -189,7 +190,7 @@ class CellAnnotator(nn.Module):
         tokens = jax.lax.stop_gradient(self.variables["params"]["predictor"]["embed"]["Embed_0"]["embedding"])
 
         if self.predictor.log_transform:
-            sg = sg.replace(data = jnp.log1p(sg.data) + gamma[sg.indices])
+            sg = sg.replace(data = jnp.log1p(sg.data) + jnp.exp(gamma[sg.indices]))
         else:
             sg = sg.replace(data = sg.data * jnp.exp(gamma[sg.indices]))
 
