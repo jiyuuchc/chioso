@@ -34,6 +34,7 @@ tf.config.set_visible_devices([], "GPU")
 _CONFIG = config_flags.DEFINE_config_file("config")
 _FLAGS = flags.FLAGS
 flags.DEFINE_string("logpath", ".", "")
+flags.DEFINE_bool("resume", True, "")
 
 def format_patch(config, sgc):
     ps = config.dataset.patch_size
@@ -210,9 +211,19 @@ def run(config, logpath):
     train_it.parameters["main_module"]["predictor"] = params
     train_it.freeze("main_module/predictor")
 
+    if _FLAGS.resume:
+        cps = [int(p.name.split("_")[1]) for p in logpath.glob("checkpoint_*")]
+        if len(cps) > 0:
+            last_cp = max(cps)
+            train_it = ocp.StandardCheckpointer().restore(
+                (logpath/f"checkpoint_{last_cp}"/"model").absolute(),
+                args = ocp.args.StandardRestore(train_it),
+            )
+            logging.info(f"Resume training from checkpoint checkpoint_{last_cp}")
+        
     # checkpoint(config, train_it, logpath / "checkpoint_0")
-
-    for steps in tqdm(range(config.train.train_steps)):
+    start_step = train_it.step
+    for steps in tqdm(range(start_step, config.train.train_steps)):
         next(train_it)
 
         if (steps + 1) % config.train.checkpoint_interval == 0:
