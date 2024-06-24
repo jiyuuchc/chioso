@@ -29,7 +29,7 @@ def process_h5ad():
     adata = read_h5ad(src, backed='r')
     adata.var_names_make_unique()
 
-    logging.info("Read gene names from {genefile}")
+    logging.info(f"Read gene names from {genefile}")
     with open(genefile) as f:
         genes = json.load(f)
         if isinstance(genes, dict):
@@ -67,7 +67,7 @@ def process_h5ad():
             ),
         )
 
-    logging.info("Writing dataset to {outfile}")
+    logging.info(f"Writing dataset to {outfile}")
     get_ds().save(str(outfile))
 
     print("Done creating dataset for these cell types:")
