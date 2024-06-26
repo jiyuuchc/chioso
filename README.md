@@ -21,7 +21,7 @@ pip install git+https://github.com/jiyuuchc/chioso.git
 ##### 0. Required Inputs
  1. ScRNAseq with cell type annotation in [h5ad](https://anndata.readthedocs.io) format
  2. Spatial data in space-deliminated text format with four feature columns: gene, x, y, counts. 
- 3. Common genes in both datasets (or a subset genes of interests) in a separate text file
+ 3. Common genes in both datasets (or a subset genes of interests) as a list of string saved in a JSON file
 
 #### 1. Convert input data to more efficient formats
 ```
