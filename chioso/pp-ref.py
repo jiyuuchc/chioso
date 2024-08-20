@@ -49,8 +49,12 @@ def process_h5ad():
                 if not celltype in all_cell_types_dict:
                     all_cell_types_dict[celltype] = len(all_cell_types_dict)
 
-                gids = lut[row.indices]
-                cnts = row.data
+                try:
+                    gids = lut[row.indices]
+                    cnts = row.data
+                except:
+                    gids = lut[np.where(row > 0)[0]]
+                    cnts = row[row > 0]
                 sel = gids >= 0
                 cnts = cnts[sel]
                 gids = gids[sel]
