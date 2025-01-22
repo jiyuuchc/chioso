@@ -41,7 +41,10 @@ def load_gem():
     lut = dict(zip(genes, range(len(genes))))
     
     def conv_f(x):
-        x = x.decode()
+        try:
+            x = x.decode()
+        except:
+            pass
         if x in lut:
             return lut[x]
         else:
