@@ -61,7 +61,7 @@ def inference(config):
         name = input_path.stem
         tifffile.imwrite(logpath/f"{name}_score.tif", scores.astype("float32"))
         tifffile.imwrite(logpath/f"{name}_cts.tif", cts.astype("float32"))
-        tifffile.imwrite(logpath/f"{name}_label.tif", label.astype("uint8"))
+        tifffile.imwrite(logpath/f"{name}_label.tif", label.astype("uint16"))
 
         logging.info(f"Saved perdictions for {input_path.name}")
 
