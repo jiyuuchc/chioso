@@ -75,6 +75,11 @@ def predict(model, params, sgdataset, *, ps=1024, gs=1000, binning=4, bucketsize
     imgh = ((h - 1) // gs * gs + ps) // binning
     imgw = ((w - 1) // gs * gs + ps) // binning
 
+    roi_sz = model.main_module.roi
+    dy, dx = np.mgrid[-(roi_sz//2):roi_sz//2+1, -(roi_sz//2):roi_sz//2+1]
+    dy = dy.reshape(-1)
+    dx = dx.reshape(-1)
+
     def _format_patch(sgc):
         if sgc.shape[0] != ps or sgc.shape[1] != ps:
             sgc = sgc.pad([[0, ps-sgc.shape[0]],[0, ps-sgc.shape[1]]])
@@ -102,15 +107,23 @@ def predict(model, params, sgdataset, *, ps=1024, gs=1000, binning=4, bucketsize
         model.apply,
         mutable="adversal",
         method=_method,
+        capture_intermediates=True,
     )
 
     logits = None
     label = np.zeros([imgh, imgw], dtype="uint32") 
     cts = np.zeros([imgh, imgw], dtype="uint32")
     scores = np.zeros([imgh, imgw], dtype="float32")
+    offsets = np.zeros([2, imgh, imgw], dtype="float32")
 
     for inputs in GeneratorAdapter(partial(_gen, sgdataset)):
-        (pred, sg, y0, x0), y = JIT.predict(apply_fn, dict(params=params), inputs)
+        prediction, state = JIT.predict(apply_fn, dict(params=params), inputs)
+
+        pred, sg, y0, x0 = prediction
+
+        weights = state['intermediates']['main_module']['att_weights'][0]
+        dcy = (weights * dy).sum(axis=-1)
+        dcx = (weights * dx).sum(axis=-1)
 
         if sg.indptr[-1] > 0:
             cts_ = sg.render(mode="counts")
@@ -129,6 +142,7 @@ def predict(model, params, sgdataset, *, ps=1024, gs=1000, binning=4, bucketsize
             label[y0 : y1, x0 : x1] = label_[bs:-bs,bs:-bs]
             cts[y0 : y1, x0 : x1] = cts_[bs:-bs,bs:-bs]
             scores[y0 : y1, x0 : x1] = scores_[bs:-bs,bs:-bs, 0]
+            offsets[y0 : y1, x0 : x1] = np.stack([dcx, dcy])[:, bs:-bs, bs:-bs]
 
         if return_logits:
             if logits is None:
@@ -137,7 +151,7 @@ def predict(model, params, sgdataset, *, ps=1024, gs=1000, binning=4, bucketsize
             logits[y0 : y1, x0 : x1] = logits_[bs:-bs,bs:-bs]
 
     if return_logits:
-        return label, scores, cts, logits
+        return label, scores, cts, offsets, logits
     else:
-        return label, scores, cts
+        return label, scores, cts, offsets
 

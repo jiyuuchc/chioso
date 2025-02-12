@@ -40,7 +40,7 @@ def inference(config):
     for input_path in Path(config.dataset.path).glob(config.dataset.train_files):
         with h5py.File(input_path, "r") as src_data:
             sgdataset = SGDataset2D(src_data["X"], np.dtype("int32"))
-            label, scores, cts = predict(
+            label, scores, cts, offsets = predict(
                 model, params, sgdataset,
                 ps = config.dataset.patch_size, 
                 gs = config.dataset.grid_size, 
@@ -62,6 +62,7 @@ def inference(config):
         tifffile.imwrite(logpath/f"{name}_score.tif", scores.astype("float32"))
         tifffile.imwrite(logpath/f"{name}_cts.tif", cts.astype("float32"))
         tifffile.imwrite(logpath/f"{name}_label.tif", label.astype("uint16"))
+        tifffile.imwrite(logpath/f"{name}_offsets.tif", offsets.astype("float32"))
 
         logging.info(f"Saved perdictions for {input_path.name}")
 
