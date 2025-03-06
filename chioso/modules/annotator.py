@@ -175,7 +175,7 @@ class CellAnnotator(nn.Module):
         return x0
 
     @nn.compact
-    def __call__(self, sg, *, training=False):
+    def __call__(self, sg:SGData2D, *, training:bool=False):
         
         # sg = SGData2D(cnts, gids, indptr, self.shape2d, self.embed.shape[0])
         # scale = self.param("scale", lambda rng, shape: jnp.ones(shape) * 1e-6, [1])
@@ -194,7 +194,9 @@ class CellAnnotator(nn.Module):
         else:
             sg = sg.replace(data = sg.data * jnp.exp(gamma[sg.indices]))
 
-        x0 = dummy_stem(sg, tokens)
+        sg_cnts = sg.render("counts", use_jax=True)
+
+        x0 = dummy_stem(sg, tokens)[..., None]
 
         x = ConvNeXt(1,  depths=self.depths, dims=self.dims, drop_path_rate=self.dropout)(x0, training=training)
         x = FPN(self.fpn_dim)(x)[0]
@@ -213,6 +215,10 @@ class CellAnnotator(nn.Module):
             x0 = x0 * jnp.exp(nn.Dense(1)(x))
 
         x = self.att(x0, weights)
+        
+        #normalize
+        cnts = self.at(sg_cnts, weights)
+        x = x / jnp.maximum(cnts, 1e-6)
 
         if self.predictor.normalize:
             cnts = dummy_stem(sg, jnp.ones([tokens.shape[0], 1]))

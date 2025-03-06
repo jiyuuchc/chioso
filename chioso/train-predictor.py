@@ -215,13 +215,17 @@ def run(config, logpath, seed):
 
     logging.info("Record reference cell features")
     embedding = tf.constant(train_it.parameters["embed"]["Embed_0"]["embedding"])
+
     # FIXME implement using nn.apply and JIT
     def _agg(indices, cnts, gt):
         cnts = tf.cast(cnts, tf.float32)
+
         if model.log_transform:
             cnts = tf.math.log1p(cnts)
-        if model.normalize:
-            cnts = cnts / tf.reduce_sum(cnts)
+
+        # if model.normalize:
+        cnts = cnts / tf.reduce_sum(cnts)
+
         x = cnts[None,:] @ tf.gather(embedding, indices)
         return x[0]
 

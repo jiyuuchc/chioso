@@ -58,9 +58,9 @@ def get_ds(config):
         ref_ds = tf.data.Dataset.load(str(
             Path(config.predictor.checkpoint) / config.predictor.dataset.outname
         )).repeat().batch(config.train.ref_batch_size)
-        ref_ds_iter = ref_ds.as_numpy_iterator()
 
         ref_iter = ref_ds.as_numpy_iterator()
+
         train_files = list(Path(config.dataset.path).glob(config.dataset.train_files))
 
         logging.info(f"Found {len(train_files)} trainng datasets:")
